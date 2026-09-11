@@ -1,10 +1,152 @@
 # Personal Data Science RAG Assistant
 
-This project is initialized to create a free personal RAG assistant to chat about Data Science topics. This document and repo will be updated as long as a process is made
+A local retrieval-augmented generation (RAG) prototype for asking questions about a personal collection of data science documents.
 
+The project extracts and chunks documents, embeds the chunks locally with Ollama, stores them in ChromaDB, retrieves the most relevant context for a question, and generates a cited answer through Groq's OpenAI-compatible API.
 
-## Steps
+## How it works
 
-### 1) Ingestion Pipeline
+```text
+Documents in data/corpus/
+        |
+        v
+ingestion_pipeline_raw.py
+        |
+        v
+data/processed/chunks.jsonl
+        |
+        v
+embedding_pipeline_raw.py -- Ollama (bge-m3)
+        |
+        v
+chroma_db/
+        |
+        v
+generation_raw.py -- Groq-hosted generation model
+        |
+        v
+Answer with source citations
+```
 
-ingestion_pipeline_raw.py file will be created to read the corpus from the project directory and split the content into chunks. Currently, it is under planning phase to decide which methods will be used. Whether it will be done from scratch or using some methods provided my langchain community (Especially ColPali for pdf files).
+## Current features
+
+- Reads PDF, Markdown, plain-text, and HTML files.
+- Assigns a category based on each document's subdirectory under `data/corpus/`.
+- Splits normalized text into overlapping character-based chunks.
+- Creates embeddings locally with Ollama's `bge-m3` model.
+- Stores and searches embeddings using a persistent ChromaDB collection with cosine distance.
+- Restricts generated answers to the retrieved context.
+- Places numbered citations such as `[1]` after claims.
+- Deduplicates citations by source: several retrieved chunks from the same file share one citation number and produce one entry in the source list.
+
+## Requirements
+
+- Python 3.12 or newer
+- [uv](https://docs.astral.sh/uv/) for dependency management
+- [Ollama](https://ollama.com/) running locally
+- A Groq API key
+
+Install the Python dependencies and download the embedding model:
+
+```bash
+uv sync
+ollama pull bge-m3
+```
+
+Make sure the Ollama service is running before embedding documents or asking questions.
+
+## Configuration
+
+Create a `.env` file in the project root:
+
+```dotenv
+GROQ_API_KEY=your_groq_api_key
+```
+
+The generation script currently uses `qwen/qwen3.8-27b`, configured by `GEN_MODEL` in `generation_raw.py`. Retrieval returns five chunks by default through the `TOP_K` setting.
+
+Do not commit `.env` when it contains credentials.
+
+## Usage
+
+### 1. Add documents
+
+Place source documents in `data/corpus/`. Files directly inside that directory receive the `uncategorized` category. Use subdirectories to assign categories:
+
+```text
+data/corpus/
+├── machine-learning/
+│   └── calibration.pdf
+├── statistics/
+│   └── bayesian-notes.md
+└── general-notes.txt
+```
+
+Supported extensions are `.pdf`, `.md`, `.txt`, `.html`, and `.htm`.
+
+### 2. Ingest and chunk the documents
+
+```bash
+uv run python ingestion_pipeline_raw.py
+```
+
+This creates `data/processed/chunks.jsonl`. The current chunking configuration uses 800 characters per chunk with a 200-character overlap.
+
+### 3. Create the vector database
+
+```bash
+uv run python embedding_pipeline_raw.py
+```
+
+This embeds the processed chunks with Ollama and stores them in the `personal_rag_assistant` collection under `chroma_db/`. The script also runs a small retrieval sanity check.
+
+### 4. Ask a question
+
+```bash
+uv run python generation_raw.py "How does the Asymmetric Duo algorithm work?"
+```
+
+An answer has the following general form:
+
+```text
+The answer contains claims supported by the retrieved context [1].
+
+Sources:
+  [1] category/document.pdf
+```
+
+When several retrieved chunks come from `document.pdf`, all of them are labeled `[1]`; the file is listed only once. If chunks come from another document, that document receives the next number, such as `[2]`.
+
+## Project structure
+
+```text
+.
+├── data/
+│   ├── corpus/                 # Source documents
+│   └── processed/
+│       └── chunks.jsonl        # Extracted and chunked text
+├── chroma_db/                  # Persistent vector database
+├── ingestion_pipeline_raw.py   # Extraction and chunking
+├── embedding_pipeline_raw.py   # Embedding and ChromaDB indexing
+├── generation_raw.py           # Retrieval, generation, and citations
+├── pyproject.toml              # Python project and dependencies
+└── uv.lock                     # Locked dependency versions
+```
+
+## Rebuilding after document changes
+
+After adding, removing, or editing documents, rerun the ingestion and embedding stages before asking questions:
+
+```bash
+uv run python ingestion_pipeline_raw.py
+uv run python embedding_pipeline_raw.py
+```
+
+## Current limitations
+
+- Chunking is character-based rather than token- or structure-aware.
+- PDF extraction uses plain text extraction and does not preserve complex layouts, figures, or tables.
+- Retrieval uses a fixed top-five result count without reranking.
+- Answers and inline citations are generated by the model, so citation correctness is not independently validated.
+- The embedding pipeline currently uses each document's numeric `chunk_id` as its ChromaDB ID; chunk IDs can collide when indexing multiple documents.
+- The scripts are an early raw pipeline and do not yet provide a chat interface or automated tests.
